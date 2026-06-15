@@ -61,7 +61,7 @@ struct KeypadView: View {
             viewModel.inputDigit(d)
         case .op(_, let op):
             viewModel.setOperation(op)
-        case .action(let label, let action):
+        case .action(_, let action):
             switch action {
             case .clearEntry:
                 viewModel.clearEntry()

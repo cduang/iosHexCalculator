@@ -6,7 +6,7 @@ struct CalculatorView: View {
     @State private var showMenu = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             VStack(spacing: 0) {
                 // 显示区域
                 displayArea

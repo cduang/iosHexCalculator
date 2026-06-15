@@ -26,9 +26,6 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Install ldid
-        run: brew install ldid
-
       - name: Build and package TIPA
         run: |
           chmod +x build_tipa.sh
