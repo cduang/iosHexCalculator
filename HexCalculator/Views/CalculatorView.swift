@@ -28,12 +28,12 @@ struct CalculatorView: View {
                 }
             }
             .confirmationDialog("关于", isPresented: $showMenu, titleVisibility: .visible) {
-                Button("清除全部") {
-                    viewModel.clearEntry()
+                Button("清除全部 (AC)") {
+                    viewModel.clearAll()
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("程序员进制计算器\n支持 HEX / DEC / OCT / BIN")
+                Text("程序员进制计算器\n支持 HEX / DEC / OCT / BIN\nCE 清除当前输入，AC 重置全部")
             }
         }
     }

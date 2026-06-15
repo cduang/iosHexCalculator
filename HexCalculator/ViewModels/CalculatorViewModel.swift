@@ -2,18 +2,20 @@ import Foundation
 import Combine
 
 /// 程序员计算器核心逻辑
+/// 状态机：accumulator 保存第一操作数/连算中间结果，pendingOperation 保存待执行运算符
 final class CalculatorViewModel: ObservableObject {
     @Published var activeBase: NumberBase = .hex
     @Published var displayValues: [NumberBase: String] = [:]
-    @Published var inputString: String = "0"
 
-    private var storedValue: UInt64 = 0
+    private var accumulator: UInt64 = 0
     private var pendingOperation: CalculatorOperation?
-    private var isEnteringNumber = true
+    /// 为 true 表示刚按过运算符或等号，下一次输入数字会覆盖而非追加
+    private var startNewEntryOnNextDigit = false
     private var hasError = false
+    private var inputBuffer = "0"
 
     init() {
-        updateAllDisplays(from: 0)
+        syncDisplay(0)
     }
 
     // MARK: - 进制切换
@@ -21,15 +23,10 @@ final class CalculatorViewModel: ObservableObject {
     func selectBase(_ base: NumberBase) {
         guard base != activeBase else { return }
 
-        // 切换进制时，用当前数值在新进制下继续输入
-        if let value = activeBase.parse(inputString) {
-            activeBase = base
-            inputString = base.format(value)
-            isEnteringNumber = true
-            updateAllDisplays(from: value)
-        } else {
-            activeBase = base
-        }
+        let value = activeBase.parse(inputBuffer) ?? 0
+        activeBase = base
+        inputBuffer = base.format(value)
+        syncDisplay(value)
     }
 
     // MARK: - 数字输入
@@ -38,81 +35,95 @@ final class CalculatorViewModel: ObservableObject {
         guard !hasError else { return }
         guard let char = digit.first, activeBase.isValidCharacter(char) else { return }
 
-        if !isEnteringNumber {
-            inputString = String(char)
-            isEnteringNumber = true
-        } else if inputString == "0" {
-            inputString = String(char)
-        } else if inputString.count < activeBase.maxInputLength {
-            inputString += String(char)
+        if startNewEntryOnNextDigit {
+            inputBuffer = String(char)
+            startNewEntryOnNextDigit = false
+        } else if inputBuffer == "0" {
+            inputBuffer = String(char)
+        } else if inputBuffer.count < activeBase.maxInputLength {
+            inputBuffer.append(char)
         } else {
             return
         }
 
-        if let value = activeBase.parse(inputString) {
-            updateAllDisplays(from: value)
-        }
+        syncDisplay(currentValue)
     }
 
     // MARK: - 控制键
 
+    /// CE：清除当前输入；若刚按过运算符则恢复显示第一操作数
     func clearEntry() {
-        hasError = false
-        inputString = "0"
-        isEnteringNumber = true
-        updateAllDisplays(from: 0)
+        if hasError {
+            resetAll()
+            return
+        }
+
+        if pendingOperation != nil && startNewEntryOnNextDigit {
+            inputBuffer = activeBase.format(accumulator)
+            syncDisplay(accumulator)
+        } else {
+            inputBuffer = "0"
+            syncDisplay(0)
+        }
+    }
+
+    /// 清除全部状态
+    func clearAll() {
+        resetAll()
     }
 
     func backspace() {
         guard !hasError else { return }
 
-        if inputString.count <= 1 {
-            inputString = "0"
-        } else {
-            inputString.removeLast()
+        if startNewEntryOnNextDigit {
+            return
         }
 
-        if let value = activeBase.parse(inputString) {
-            updateAllDisplays(from: value)
+        if inputBuffer.count <= 1 {
+            inputBuffer = "0"
+        } else {
+            inputBuffer.removeLast()
         }
+
+        syncDisplay(currentValue)
     }
 
     func setOperation(_ operation: CalculatorOperation) {
         guard !hasError else { return }
 
         if operation == .not {
-            applyUnaryOperation(.not)
+            applyUnary(.not)
             return
         }
 
-        // 连续运算：已有待执行操作时，先结算再挂新操作
-        if let pending = pendingOperation, isEnteringNumber {
-            if let current = activeBase.parse(inputString) {
-                storedValue = calculate(storedValue, current, pending) ?? storedValue
-            }
-        } else if pendingOperation == nil {
-            storedValue = activeBase.parse(inputString) ?? 0
+        let current = currentValue
+
+        if let pending = pendingOperation, !startNewEntryOnNextDigit {
+            // 连算：已输入第二个操作数，先结算
+            guard let result = compute(accumulator, current, pending) else { return }
+            accumulator = result
+        } else {
+            // 首次按运算符，或替换运算符（尚未输入第二个数）→ 只保存第一操作数
+            accumulator = current
         }
 
         pendingOperation = operation
-        isEnteringNumber = false
-        inputString = activeBase.format(storedValue)
-        updateAllDisplays(from: storedValue)
+        startNewEntryOnNextDigit = true
+        inputBuffer = activeBase.format(accumulator)
+        syncDisplay(accumulator)
     }
 
     func calculateResult() {
-        guard !hasError else { return }
+        guard !hasError, let pending = pendingOperation else { return }
 
-        guard let operation = pendingOperation else { return }
+        let current = currentValue
+        guard let result = compute(accumulator, current, pending) else { return }
 
-        let current = activeBase.parse(inputString) ?? 0
-
-        if let result = calculate(storedValue, current, operation) {
-            applyResult(result)
-        }
-
+        accumulator = result
         pendingOperation = nil
-        isEnteringNumber = false
+        startNewEntryOnNextDigit = true
+        inputBuffer = activeBase.format(result)
+        syncDisplay(result)
     }
 
     // MARK: - 按键可用性
@@ -128,38 +139,37 @@ final class CalculatorViewModel: ObservableObject {
 
     // MARK: - 私有方法
 
-    private func applyUnaryOperation(_ operation: CalculatorOperation) {
-        guard let current = activeBase.parse(inputString) else { return }
+    private var currentValue: UInt64 {
+        activeBase.parse(inputBuffer) ?? 0
+    }
 
-        if let result = calculate(current, 0, operation) {
-            applyResult(result)
-        }
+    private func applyUnary(_ operation: CalculatorOperation) {
+        let current = currentValue
+        guard let result = compute(current, 0, operation) else { return }
 
+        accumulator = result
         pendingOperation = nil
-        isEnteringNumber = false
+        startNewEntryOnNextDigit = true
+        inputBuffer = activeBase.format(result)
+        syncDisplay(result)
     }
 
-    private func applyResult(_ result: UInt64) {
-        inputString = activeBase.format(result)
-        updateAllDisplays(from: result)
-        storedValue = result
+    private func resetAll() {
+        hasError = false
+        accumulator = 0
+        pendingOperation = nil
+        startNewEntryOnNextDigit = false
+        inputBuffer = "0"
+        syncDisplay(0)
     }
 
-    private func setError() {
-        hasError = true
-        inputString = "错误"
-        for base in NumberBase.allCases {
-            displayValues[base] = "—"
-        }
-    }
-
-    private func updateAllDisplays(from value: UInt64) {
+    private func syncDisplay(_ value: UInt64) {
         for base in NumberBase.allCases {
             displayValues[base] = base.format(value)
         }
     }
 
-    private func calculate(_ lhs: UInt64, _ rhs: UInt64, _ op: CalculatorOperation) -> UInt64? {
+    private func compute(_ lhs: UInt64, _ rhs: UInt64, _ op: CalculatorOperation) -> UInt64? {
         switch op {
         case .add:
             let result = lhs.addingReportingOverflow(rhs)
@@ -202,6 +212,14 @@ final class CalculatorViewModel: ObservableObject {
 
         case .not:
             return ~lhs
+        }
+    }
+
+    private func setError() {
+        hasError = true
+        inputBuffer = "错误"
+        for base in NumberBase.allCases {
+            displayValues[base] = "—"
         }
     }
 }
